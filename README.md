@@ -6,7 +6,7 @@
 
 <!-- Drop a screenshot of `up` here. The banner + chain plan + post-up
      verification all in one shot make a great first impression. -->
-<!-- ![banner screenshot](docs/screenshots/banner.png) (screenshot not captured yet; capture per docs/screenshots/README.md, then: git add -f docs/screenshots/*.png) -->
+![banner screenshot](docs/screenshots/banner.png)
 
 ---
 
@@ -45,7 +45,7 @@ The CLI prints this exact topology before every `up` and on every `status`:
 
 <!-- Screenshot: chain_orbit visualisation. Looks like nested rings with the
      IP of each hop on the bottom border of its ring. -->
-<!-- ![topology orbit](docs/screenshots/orbit.png) (screenshot not captured yet; capture per docs/screenshots/README.md, then: git add -f docs/screenshots/*.png) -->
+![topology orbit](docs/screenshots/orbit.png)
 
 ## Quick Start
 
@@ -72,7 +72,7 @@ tunnels up, exit IPs distinct, lockdown firewall in place, and a live
 hop ≥ 2 directly.
 
 <!-- Screenshot: the post-up verification block with the green ✓s. -->
-<!-- ![post-up verification](docs/screenshots/postcheck.png) (screenshot not captured yet; capture per docs/screenshots/README.md, then: git add -f docs/screenshots/*.png) -->
+![post-up verification](docs/screenshots/postcheck.png)
 
 ## Installation
 
@@ -172,7 +172,7 @@ Reads JSON state from `/var/lib/vpnchainer/` and reports whether the chain is
 reboots) or **inactive**. Doesn't need root.
 
 <!-- Screenshot: status command output -->
-<!-- ![status output](docs/screenshots/status.png) (screenshot not captured yet; capture per docs/screenshots/README.md, then: git add -f docs/screenshots/*.png) -->
+![status output](docs/screenshots/status.png)
 
 ### `down` — tear down
 
@@ -303,7 +303,7 @@ the chain were leaking around hop K, the host would still be online and the
 test would fail loudly.
 
 <!-- Screenshot: verify_chain.sh output with all green check marks -->
-<!-- ![verify_chain output](docs/screenshots/verify.png) (screenshot not captured yet; capture per docs/screenshots/README.md, then: git add -f docs/screenshots/*.png) -->
+![verify_chain output](docs/screenshots/verify.png)
 
 ## Architecture
 
