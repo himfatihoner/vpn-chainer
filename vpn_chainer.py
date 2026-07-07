@@ -255,12 +255,11 @@ def _cmd_recover(args: argparse.Namespace) -> int:
     util.banner("recovery mode")
     if not args.yes:
         util.subheader("This will:")
-        util.step_info("stop any vpnchain_* OpenVPN processes")
-        util.step_info("delete every vpnchain_* namespace")
-        util.step_info("remove vpnc*o veth interfaces from the host")
-        util.step_info("undo iptables MASQUERADE / DROP rules in host_state.json")
-        util.step_info("restore /etc/resolv.conf if it was overridden")
-        util.step_info("delete all state files under /var/lib/vpnchainer/")
+        util.step_info("stop any leftover vpnchain_* OpenVPN processes")
+        util.step_info("delete every vpnchain_* namespace and vpnc* veth")
+        util.step_info("undo host iptables rules (MASQUERADE swept by pattern even with no state file)")
+        util.step_info("rebuild the host default route and restore /etc/resolv.conf")
+        util.step_info("wipe all state under /var/lib/vpnchainer/ and /run/vpnchainer/")
         if not _confirm("Continue?"):
             util.log("aborted")
             return 0

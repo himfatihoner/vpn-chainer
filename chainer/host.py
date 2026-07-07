@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,6 +28,15 @@ from .util import PERSIST_DIR, log, run, warn
 
 STATE_FILE = PERSIST_DIR / "host_state.json"
 RESOLV_PATH = Path("/etc/resolv.conf")
+
+# Base /16 prefixes the chain subnets may use (see netns.DEFAULT_BASE_PREFIX /
+# FALLBACK_PREFIXES). The heuristic sweep uses these to recognise a leftover
+# chain MASQUERADE rule when host_state.json is gone.
+_CHAIN_PREFIXES = ("10.200.0.0/16", "10.201.0.0/16", "10.202.0.0/16", "172.31.0.0/16")
+
+# First line _override_resolv writes into /etc/resolv.conf — used to detect our
+# own override during a stateless sweep.
+_RESOLV_MARKER = "# vpn-chainer override"
 
 
 @dataclass
@@ -192,6 +202,32 @@ def restore(state: HostState | None = None) -> None:
         STATE_FILE.unlink()
 
 
+def force_restore() -> None:
+    """Restore the host even when host_state.json is missing or corrupt.
+
+    Runs the precise, record-based `restore()` first when a state file exists,
+    then sweeps the live kernel for any leftover vpn-chainer host mutations and
+    undoes them by pattern: a lingering chain MASQUERADE rule, a default route
+    still pointing through a chain veth (rebuilt from the surviving carrier /32
+    pin, which itself encodes the original gateway), and an overridden
+    /etc/resolv.conf. This is what lets `recover` un-wedge a host with no state
+    on disk, so no manual recovery procedure is ever required.
+    """
+    st = _load()
+    if st is not None:
+        try:
+            restore(st)
+        except Exception as e:
+            warn(f"state-based host restore raised: {e}")
+
+    # Each sweep is independent — one raising must not skip the others.
+    for sweep in (_sweep_masquerade, _sweep_default_route, _sweep_resolv):
+        try:
+            sweep()
+        except Exception as e:
+            warn(f"host sweep {sweep.__name__} raised: {e}")
+
+
 # ───────────────────────────── Helpers ─────────────────────────────
 
 
@@ -227,6 +263,109 @@ def _read_ip_forward() -> str:
         return p.read_text().strip()
     except OSError:
         return "0"
+
+
+def _sweep_masquerade() -> None:
+    """Drop any nat/POSTROUTING MASQUERADE rule whose source is EXACTLY one of
+    the chain's own /16s — matched on the `-s` token, not a substring, so a
+    user's own NAT on an overlapping/lookalike range is never touched."""
+    proc = run(["iptables", "-t", "nat", "-S", "POSTROUTING"], check=False)
+    for line in (proc.stdout or "").splitlines():
+        if not line.startswith("-A POSTROUTING") or "MASQUERADE" not in line:
+            continue
+        toks = shlex.split(line)
+        if "-s" not in toks:
+            continue
+        i = toks.index("-s")
+        if i + 1 >= len(toks) or toks[i + 1] not in _CHAIN_PREFIXES:
+            continue
+        toks[0] = "-D"  # "-A POSTROUTING …" → "-D POSTROUTING …"
+        run(["iptables", "-t", "nat", *toks], check=False)
+        log("recover: removed leftover chain MASQUERADE rule")
+
+
+def _default_route_dev() -> str:
+    """dev of the current IPv4 default route, or '' if there is none."""
+    proc = run(["ip", "-4", "-j", "route", "show", "default"], check=False)
+    if proc.returncode == 0 and (proc.stdout or "").strip():
+        try:
+            data = json.loads(proc.stdout)
+            if data:
+                return data[0].get("dev", "")
+        except json.JSONDecodeError:
+            pass
+    return ""
+
+
+def _find_carrier_pin() -> tuple[str, str, str] | None:
+    """Locate the leftover VPN_1 carrier pin route.
+
+    `redirect_default_route` installs `ip route replace <vpn1>/32 via <orig_gw>
+    dev <orig_iface>`, so even after host_state.json is gone this /32 host route
+    still encodes the original gateway and physical interface. Returns
+    (gw, dev, dst) or None. `ip -j` prints a bare address (no prefixlen) for a
+    /32, which distinguishes it from the chain's /30 veth subnets.
+    """
+    proc = run(["ip", "-4", "-j", "route", "show"], check=False)
+    if proc.returncode != 0:
+        return None
+    try:
+        data = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    for entry in data:
+        dst = entry.get("dst", "")
+        gw = entry.get("gateway", "")
+        dev = entry.get("dev", "")
+        if not gw or not dev or dev == "lo" or dev.startswith("vpnc"):
+            continue
+        if dst in ("default", "") or "/" in dst:
+            continue
+        return gw, dev, dst
+    return None
+
+
+def _sweep_default_route() -> None:
+    """Rebuild the default route from the surviving carrier pin if it is missing
+    or still points through a chain veth."""
+    dev = _default_route_dev()
+    if dev and not dev.startswith("vpnc"):
+        return  # a normal default route is already in place — leave it alone
+    pin = _find_carrier_pin()
+    if pin is None:
+        if not dev:
+            warn("recover: no default route and no recoverable carrier pin — "
+                 "set it manually: ip route add default via <gw> dev <iface>")
+        return
+    gw, iface, _dst = pin
+    # Rebuild the default via the pinned gateway/iface. Deliberately do NOT
+    # delete the /32 pin route: we only *guessed* it here (no state to confirm),
+    # so deleting it risks removing a user's own static host route. Left in
+    # place it is harmless — it merely routes that one ex-server IP via the same
+    # gateway the default now uses.
+    run(["ip", "route", "replace", "default", "via", gw, "dev", iface], check=False)
+    log(f"recover: default route rebuilt from carrier pin → via {gw} dev {iface}")
+
+
+def _sweep_resolv() -> None:
+    """Restore /etc/resolv.conf if it still bears the vpn-chainer override marker."""
+    try:
+        if RESOLV_PATH.is_symlink() or not RESOLV_PATH.is_file():
+            return
+        first = RESOLV_PATH.read_text(errors="replace").splitlines()[:1]
+        if not first or not first[0].startswith(_RESOLV_MARKER):
+            return
+        backup = PERSIST_DIR / "resolv-backup" / "resolv.conf"
+        if backup.exists():
+            RESOLV_PATH.write_text(backup.read_text(errors="replace"))
+            backup.unlink()
+            log("recover: /etc/resolv.conf restored from backup")
+        else:
+            RESOLV_PATH.write_text("nameserver 1.1.1.1\n")
+            warn("recover: no resolv backup found — wrote a fallback nameserver; "
+                 "set your preferred DNS in /etc/resolv.conf")
+    except Exception as e:
+        warn(f"recover: resolv sweep raised: {e}")
 
 
 def _override_resolv(state: HostState, chain_dns: str) -> None:

@@ -92,13 +92,6 @@ The installer:
 5. Doesn't touch your system Python — the project is **pure stdlib**, no pip
    needed.
 
-Before piping to `bash`, you can read the script first if you'd rather see
-what it does:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/himfatihoner/vpn-chainer/main/install.sh | less
-```
-
 ### Manual install
 
 ```bash
@@ -211,7 +204,11 @@ sudo vpn-chainer recover [-y] [-v]
 
 Use this after a `kill -9`, after an unclean reboot, or whenever `status`
 reports **STALE**. It does the same job as `down` plus a pattern-based scan
-for orphan `vpnchain_*` namespaces and `vpnc*` veth interfaces.
+for orphan `vpnchain_*` namespaces and `vpnc*` veth interfaces. It also works
+when the state files are missing or corrupt: it drops any leftover chain
+MASQUERADE rule, rebuilds the host default route from the surviving carrier
+route, restores `/etc/resolv.conf`, and wipes `/var/lib/vpnchainer` and
+`/run/vpnchainer` — so there is never any manual cleanup to do by hand.
 
 ## Anonymity Guarantees
 
@@ -339,38 +336,6 @@ uninstall.sh            Mirror image of install.sh
 | OpenVPN config wants a password | `auth-user-pass` directive | the script prompts automatically — paste cred when asked |
 | Subnet `10.200.0.0/16` is taken | LAN already uses that range | the script auto-falls-back to `10.201`, `10.202`, then `172.31`. If still busy: free up your routing table |
 
-## Manual Recovery
-
-If the system is wedged badly enough that `vpn-chainer recover` won't help:
-
-```bash
-# 1) Delete every vpnchain_* namespace
-for ns in $(ip netns list | awk '/^vpnchain_ns/ {print $1}'); do
-    sudo ip netns del "$ns"
-done
-
-# 2) Remove dangling host-side veths
-for v in $(ip -br link | awk '/^vpnc[0-9]+o|^vpncIo/ {print $1}' | cut -d@ -f1); do
-    sudo ip link del "$v"
-done
-
-# 3) Restore the original default route (read from host_state.json)
-cat /var/lib/vpnchainer/host_state.json    # see orig_default_gw, orig_default_iface
-sudo ip route replace default via <orig_gw> dev <orig_iface>
-
-# 4) Drop the MASQUERADE rule
-sudo iptables -t nat -D POSTROUTING -s 10.200.0.0/16 -o <orig_iface> -j MASQUERADE
-
-# 5) Restore /etc/resolv.conf
-ls -la /etc/resolv.conf      # was it a symlink?
-sudo rm /etc/resolv.conf
-sudo ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-# (or: copy back from /var/lib/vpnchainer/resolv-backup/resolv.conf)
-
-# 6) Wipe state
-sudo rm -rf /var/lib/vpnchainer /run/vpnchainer
-```
-
 ## Limitations
 
 - **WireGuard kernel module required** (Linux ≥ 5.6, or `wireguard-dkms`).
@@ -401,8 +366,8 @@ python3 -m py_compile vpn_chainer.py chainer/*.py    # quick smoke
 bash -n verify_chain.sh                              # bash syntax check
 ```
 
-Pull requests welcome. Please run the manual recovery procedure above between
-test rounds — partial state can confuse subsequent runs.
+Pull requests welcome. Please run `sudo vpn-chainer recover` between test
+rounds — partial state can confuse subsequent runs.
 
 ## License
 

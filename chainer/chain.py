@@ -18,6 +18,7 @@ Lifecycle:
 
 from __future__ import annotations
 
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,7 @@ from . import state as state_mod
 from . import verify as verify_mod
 from . import vpn as vpn_mod
 from .detect import HopConfig
-from .util import err, log, warn
+from .util import PERSIST_DIR, RUN_DIR, err, log, warn
 
 
 @dataclass
@@ -197,16 +198,30 @@ def recover() -> None:
             warn(f"teardown raised during recover: {e}")
 
     log("scanning for leftover namespaces / interfaces by name pattern…")
-    netns_mod.teardown(None)  # falls back to pattern-based cleanup
+    try:
+        netns_mod.teardown(None)  # falls back to pattern-based cleanup
+    except Exception as e:
+        warn(f"pattern-based netns teardown raised: {e}")
 
-    # If host_state.json still exists (e.g. teardown failed), try once more.
-    if host_mod.STATE_FILE.exists():
-        try:
-            host_mod.restore(None)
-        except Exception as e:
-            warn(f"host restore on recover raised: {e}")
+    # Host-side restore: precise when host_state.json is present, plus a pattern
+    # sweep (leftover chain MASQUERADE, a default route still via a chain veth,
+    # an overridden /etc/resolv.conf) so even a host with no state on disk is
+    # fully un-wedged — this is what removes the need for any manual recovery.
+    try:
+        host_mod.force_restore()
+    except Exception as e:
+        warn(f"host force_restore on recover raised: {e}")
+
+    # Kill any orphaned per-hop processes and wipe the run-dir (pidfiles,
+    # OpenVPN logs, and 0600 credential files) a crash may have left behind.
+    try:
+        _sweep_run_dir()
+    except Exception as e:
+        warn(f"run-dir sweep raised: {e}")
 
     state_mod.delete_all()
+    # Match a full manual wipe: drop any now-stale persistent dir as well.
+    shutil.rmtree(PERSIST_DIR, ignore_errors=True)
     log("recover complete")
 
 
@@ -296,6 +311,35 @@ def _teardown_session(sess: ChainSession) -> None:
 
     state_mod.delete_all()
     log("teardown complete")
+
+
+def _pid_is_openvpn(pid: int) -> bool:
+    """True iff /proc/<pid> is still an openvpn process — guards against killing
+    an unrelated process that reused a stale recorded PID."""
+    try:
+        comm = Path(f"/proc/{pid}/comm").read_text().strip()
+    except OSError:
+        return False
+    return "openvpn" in comm
+
+
+def _sweep_run_dir() -> None:
+    """Terminate any leftover per-hop processes recorded under RUN_DIR, then
+    remove the run-dir tree (pidfiles, OpenVPN logs, and 0600 credential files)."""
+    if not RUN_DIR.exists():
+        return
+    for pidfile in RUN_DIR.glob("*.pid"):
+        try:
+            pid = int(pidfile.read_text().strip())
+        except (ValueError, OSError):
+            continue
+        if not _pid_is_openvpn(pid):
+            continue  # gone, or the PID was reused by something else
+        try:
+            vpn_mod._terminate_by_pid(pid)  # type: ignore[attr-defined]
+        except Exception as e:
+            warn(f"terminating leftover pid {pid} raised: {e}")
+    shutil.rmtree(RUN_DIR, ignore_errors=True)
 
 
 def _pid_alive(pid: int | None) -> bool:
