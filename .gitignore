@@ -1,0 +1,54 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local virtualenvs (project itself is stdlib-only, but contributors may
+# create venvs while hacking).
+.venv/
+venv/
+env/
+
+# Test artefacts (never commit user VPN configs; the sample configs under
+# examples/ stay local too).
+*.ovpn
+*.conf
+examples/
+
+# Runtime state / logs (these live under /var/lib/vpnchainer and
+# /run/vpnchainer at runtime; this rule guards against accidentally checking
+# them in if someone copies them into the repo for debugging).
+state/
+*.pid
+*.cred
+
+# Persisted runtime state (contains the real gateway/VPN server IPs of the
+# machine it ran on; guard against debug copies being committed)
+host_state.json
+topology.json
+chain.json
+hops.json
+resolv-backup/
+*.log
+
+# Build outputs
+*.tar.gz
+*.zip
+dist/
+build/
+
+# Screenshots placeholder folder is tracked, but generated PNGs live here
+# (committed manually after capturing).
+docs/screenshots/*.png
+!docs/screenshots/README.md
+
+# Local-only publication guide (intentionally never committed)
+GITHUB_YUKLEME_REHBERI.md
